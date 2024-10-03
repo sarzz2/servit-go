@@ -2,10 +2,11 @@ package main
 
 import (
 	"fmt"
-	"github.com/gin-gonic/gin"
 	"servit-go/internal/config"
 	"servit-go/internal/db"
 	"servit-go/internal/routes"
+
+	"github.com/gin-gonic/gin"
 )
 
 func main() {
