@@ -6,15 +6,10 @@ import (
 	"net/http"
 	"servit-go/internal/chat"
 	"servit-go/internal/middleware"
+	"servit-go/internal/models"
 
 	"github.com/gorilla/websocket"
 )
-
-type Message struct {
-	FromUserID string `json:"from_user_id"`
-	ToUserID   string `json:"to_user_id"`
-	Content    string `json:"content"`
-}
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
@@ -37,7 +32,7 @@ func ChatHandler(w http.ResponseWriter, r *http.Request) {
 	defer manager.RemoveConnection(userID)
 
 	for {
-		var msg Message
+		var msg models.Message
 		if err := conn.ReadJSON(&msg); err != nil {
 			log.Printf("Error reading message: %v", err)
 			break
