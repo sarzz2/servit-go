@@ -2,7 +2,6 @@ package services
 
 import (
 	"database/sql"
-	"fmt"
 	"log"
 	"servit-go/internal/models"
 	"time"
@@ -28,7 +27,6 @@ func (s *ChatService) SaveMessage(msg models.Message) error {
 	now := time.Now()
 	msg.CreatedAt = now.Format(time.RFC3339)
 	msg.UpdatedAt = now.Format(time.RFC3339)
-	fmt.Print(msg)
 
 	// Execute the query to save the message
 	_, err := s.DB.Exec(query, msg.FromUserID, msg.ToUserID, msg.Content, msg.IsEdited, msg.CreatedAt, msg.UpdatedAt)

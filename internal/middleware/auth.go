@@ -3,7 +3,6 @@ package middleware
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 
@@ -50,7 +49,6 @@ func JWTAuthMiddleware() gin.HandlerFunc {
 			ctx = context.WithValue(ctx, UserIDKey, userId)
 			c.Request = c.Request.WithContext(ctx)
 
-			log.Printf("User ID: %v", userName)
 			c.Next()
 		} else {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
