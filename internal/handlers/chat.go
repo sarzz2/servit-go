@@ -1,4 +1,3 @@
-// servit-go/internal/handlers/chat.go
 package handlers
 
 import (
@@ -7,6 +6,7 @@ import (
 	"servit-go/internal/chat"
 	"servit-go/internal/middleware"
 	"servit-go/internal/models"
+	"servit-go/internal/services"
 
 	"github.com/gorilla/websocket"
 )
@@ -18,9 +18,12 @@ var upgrader = websocket.Upgrader{
 var manager = chat.NewConnectionManager()
 
 // ChatHandler handles WebSocket requests for chat
-func ChatHandler(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(middleware.UserIDKey).(string)
+func ChatHandler(w http.ResponseWriter, r *http.Request, chatService *services.ChatService) {
+	// Retrieve userID and userName from the context
+	userId := r.Context().Value(middleware.UserIDKey).(string)
+	userName := r.Context().Value(middleware.UserNameKey).(string)
 
+	// Upgrade the connection to WebSocket
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("Failed to upgrade WebSocket: %v", err)
@@ -28,9 +31,39 @@ func ChatHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	manager.AddConnection(userID, conn)
-	defer manager.RemoveConnection(userID)
+	// Add the user connection to the manager using userID
+	manager.AddConnection(userId, conn)
+	defer manager.RemoveConnection(userId)
 
+	// Wait for the initial message from the client that contains the recipient ID
+	var initPayload struct {
+		ToUserID string `json:"toUserID"`
+		Type     string `json:"type"`
+	}
+
+	if err := conn.ReadJSON(&initPayload); err != nil {
+		log.Printf("Failed to read initial payload: %v", err)
+		return
+	}
+
+	toUserID := initPayload.ToUserID
+	if toUserID == "" {
+		log.Println("No recipient user ID provided")
+		return
+	}
+
+	// Fetch chat history between the current user and the recipient
+	messages, err := chatService.FetchMessages(userId, toUserID)
+	if err != nil {
+		log.Printf("Error fetching messages: %v", err)
+	} else {
+		// Send chat history to the connected user
+		if err := conn.WriteJSON(messages); err != nil {
+			log.Printf("Error sending chat history: %v", err)
+		}
+	}
+
+	// Handle the rest of the WebSocket communication (receiving and sending messages)
 	for {
 		var msg models.Message
 		if err := conn.ReadJSON(&msg); err != nil {
@@ -38,16 +71,21 @@ func ChatHandler(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
-		if msg.ToUserID != "" {
-			if recipientConn, ok := manager.GetConnection(msg.ToUserID); ok {
-				if err := recipientConn.WriteJSON(msg); err != nil {
-					log.Printf("Error sending message to user %s: %v", msg.ToUserID, err)
-				}
-			} else {
-				log.Printf("User %s not connected", msg.ToUserID)
+		msg.FromUserID = userId
+		msg.FromUserName = userName
+
+		// Save the message using ChatService
+		if err := chatService.SaveMessage(msg); err != nil {
+			log.Printf("Error saving message: %v", err)
+		}
+
+		// Send the message to the recipient if connected
+		if recipientConn, ok := manager.GetConnection(msg.ToUserID); ok {
+			if err := recipientConn.WriteJSON(msg); err != nil {
+				log.Printf("Error sending message to user %s: %v", msg.ToUserID, err)
 			}
 		} else {
-			log.Println("No recipient user ID provided")
+			log.Printf("User %s not connected", msg.ToUserID)
 		}
 	}
 }

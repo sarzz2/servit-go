@@ -14,7 +14,8 @@ import (
 // Define a context key for storing the user ID
 type contextKey string
 
-var UserIDKey = contextKey("userID")
+var UserNameKey = contextKey("user_name")
+var UserIDKey = contextKey("user_id")
 
 func JWTAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -42,12 +43,14 @@ func JWTAuthMiddleware() gin.HandlerFunc {
 
 		if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
 			// Store the user ID in the request context without modifying the key
-			userID := claims["sub"].(string)
+			userName := claims["sub"].(string)
+			userId := claims["id"].(string)
 			ctx := c.Request.Context()
-			ctx = context.WithValue(ctx, UserIDKey, userID)
+			ctx = context.WithValue(ctx, UserNameKey, userName)
+			ctx = context.WithValue(ctx, UserIDKey, userId)
 			c.Request = c.Request.WithContext(ctx)
 
-			log.Printf("User ID: %v", userID)
+			log.Printf("User ID: %v", userName)
 			c.Next()
 		} else {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
