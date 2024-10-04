@@ -12,4 +12,7 @@ func SetupRoutes(router *gin.Engine, chatService *services.ChatService) {
 	router.GET("/", middleware.JWTAuthMiddleware(), func(c *gin.Context) {
 		handlers.ChatHandler(c.Writer, c.Request, chatService)
 	})
+	router.GET("/fetch_paginated_messages", middleware.JWTAuthMiddleware(), func(c *gin.Context) {
+		handlers.FetchPaginatedMessagesHandler(c.Writer, c.Request, chatService)
+	})
 }

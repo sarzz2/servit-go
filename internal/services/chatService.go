@@ -44,7 +44,7 @@ func (s *ChatService) FetchMessages(fromUserID, toUserID string) ([]models.Messa
 		FROM direct_messages
 		WHERE (from_user_id = $1 AND to_user_id = $2)
 		OR (from_user_id = $2 AND to_user_id = $1)
-		ORDER BY created_at ASC
+		ORDER BY created_at DESC LIMIT 25
 	`
 
 	rows, err := s.DB.Query(query, fromUserID, toUserID)
@@ -63,5 +63,44 @@ func (s *ChatService) FetchMessages(fromUserID, toUserID string) ([]models.Messa
 		}
 		messages = append(messages, msg)
 	}
+	return messages, nil
+}
+
+// FetchPaginatedMessages retrieves a paginated set of messages based on the page number.
+func (s *ChatService) FetchPaginatedMessages(fromUserID, toUserID string, page, limit int) ([]models.Message, error) {
+	// Calculate the offset based on the page number
+	offset := (page - 1) * limit
+
+	query := `
+		SELECT id, from_user_id, to_user_id, content, is_edited, created_at, updated_at
+		FROM direct_messages
+		WHERE (from_user_id = $1 AND to_user_id = $2)
+		OR (from_user_id = $2 AND to_user_id = $1)
+		ORDER BY created_at DESC
+		LIMIT $3 OFFSET $4
+	`
+
+	rows, err := s.DB.Query(query, fromUserID, toUserID, limit, offset)
+	if err != nil {
+		log.Printf("Failed to fetch paginated messages: %v", err)
+		return nil, err
+	}
+	defer rows.Close()
+
+	var messages []models.Message
+	for rows.Next() {
+		var msg models.Message
+		if err := rows.Scan(&msg.ID, &msg.FromUserID, &msg.ToUserID, &msg.Content, &msg.IsEdited, &msg.CreatedAt, &msg.UpdatedAt); err != nil {
+			log.Printf("Failed to scan message: %v", err)
+			return nil, err
+		}
+		messages = append(messages, msg)
+	}
+
+	// Reverse the order to maintain chronological order (since we ordered by DESC)
+	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
+		messages[i], messages[j] = messages[j], messages[i]
+	}
+
 	return messages, nil
 }

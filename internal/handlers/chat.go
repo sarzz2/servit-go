@@ -1,12 +1,14 @@
 package handlers
 
 import (
+	"encoding/json"
 	"log"
 	"net/http"
 	"servit-go/internal/chat"
 	"servit-go/internal/middleware"
 	"servit-go/internal/models"
 	"servit-go/internal/services"
+	"strconv"
 
 	"github.com/gorilla/websocket"
 )
@@ -135,5 +137,35 @@ func ChatHandler(w http.ResponseWriter, r *http.Request, chatService *services.C
 		} else {
 			log.Printf("User %s not connected", msg.ToUserID)
 		}
+	}
+}
+
+// FetchPaginatedMessagesHandler handles requests for paginated messages based on page number
+func FetchPaginatedMessagesHandler(w http.ResponseWriter, r *http.Request, chatService *services.ChatService) {
+	// Retrieve query params: toUserID, page
+	toUserID := r.URL.Query().Get("to_user_id")
+	pageStr := r.URL.Query().Get("page")
+
+	page, err := strconv.Atoi(pageStr)
+	if err != nil || page <= 0 {
+		page = 2
+	}
+
+	const limit = 25
+
+	// Get fromUserID from context (authenticated user)
+	fromUserID := r.Context().Value(middleware.UserIDKey).(string)
+
+	// Fetch paginated messages
+	messages, err := chatService.FetchPaginatedMessages(fromUserID, toUserID, page, limit)
+	if err != nil {
+		http.Error(w, "Failed to fetch messages", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(messages); err != nil {
+		http.Error(w, "Failed to encode messages", http.StatusInternalServerError)
+		return
 	}
 }
