@@ -33,7 +33,6 @@ func ChatHandler(w http.ResponseWriter, r *http.Request, chatService *services.C
 
 	// Add the user connection to the manager using userID
 	manager.AddConnection(userId, conn)
-	defer manager.RemoveConnection(userId)
 
 	// Wait for the initial message from the client that contains the recipient ID
 	var initPayload struct {
@@ -52,12 +51,31 @@ func ChatHandler(w http.ResponseWriter, r *http.Request, chatService *services.C
 		return
 	}
 
+	// Send "not_typing" indicator to the recipient upon disconnection
+	defer func() {
+		// Remove the user connection from the manager
+		manager.RemoveConnection(userId)
+
+		// Send "not_typing" typing indicator on disconnection
+		typingIndicator := models.TypingIndicator{
+			Type:       "not_typing",
+			FromUserID: userId,
+			ToUserID:   toUserID,
+			Typing:     false,
+		}
+		if recipientConn, ok := manager.GetConnection(toUserID); ok {
+			if err := recipientConn.WriteJSON(typingIndicator); err != nil {
+				log.Printf("Error sending not typing indicator on disconnection to user %s: %v", toUserID, err)
+			}
+		}
+	}()
+
 	// Fetch chat history between the current user and the recipient
 	messages, err := chatService.FetchMessages(userId, toUserID)
 	if err != nil {
 		log.Printf("Error fetching messages: %v", err)
 	} else {
-		// Send chat history to the connected user immediately after connection
+		// Send chat history to the connected user
 		if err := conn.WriteJSON(messages); err != nil {
 			log.Printf("Error sending chat history: %v", err)
 		}
