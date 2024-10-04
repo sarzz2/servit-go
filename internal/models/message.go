@@ -7,6 +7,14 @@ type Message struct {
 	ToUserID     string `json:"to_user_id"`
 	Content      string `json:"content"`
 	IsEdited     bool   `json:"is_edited"`
+	Type         string `json:"type"`
 	CreatedAt    string `json:"created_at"`
 	UpdatedAt    string `json:"updated_at"`
+}
+
+type TypingIndicator struct {
+	Type       string `json:"type"` // e.g., "typing" or "not_typing"
+	FromUserID string `json:"from_user_id"`
+	ToUserID   string `json:"to_user_id"`
+	Typing     bool   `json:"typing"` // if typing, false if not typing
 }

@@ -57,7 +57,7 @@ func ChatHandler(w http.ResponseWriter, r *http.Request, chatService *services.C
 	if err != nil {
 		log.Printf("Error fetching messages: %v", err)
 	} else {
-		// Send chat history to the connected user
+		// Send chat history to the connected user immediately after connection
 		if err := conn.WriteJSON(messages); err != nil {
 			log.Printf("Error sending chat history: %v", err)
 		}
@@ -73,6 +73,40 @@ func ChatHandler(w http.ResponseWriter, r *http.Request, chatService *services.C
 
 		msg.FromUserID = userId
 		msg.FromUserName = userName
+
+		// Handle typing indicator
+		if msg.Type == "typing" {
+			typingIndicator := models.TypingIndicator{
+				Type:       "typing",
+				FromUserID: userId,
+				ToUserID:   toUserID,
+				Typing:     true,
+			}
+
+			if recipientConn, ok := manager.GetConnection(toUserID); ok {
+				if err := recipientConn.WriteJSON(typingIndicator); err != nil {
+					log.Printf("Error sending typing indicator to user %s: %v", toUserID, err)
+				}
+			}
+			continue
+		}
+
+		// Handle "not_typing" indicator
+		if msg.Type == "not_typing" {
+			typingIndicator := models.TypingIndicator{
+				Type:       "not_typing",
+				FromUserID: userId,
+				ToUserID:   toUserID,
+				Typing:     false,
+			}
+
+			if recipientConn, ok := manager.GetConnection(toUserID); ok {
+				if err := recipientConn.WriteJSON(typingIndicator); err != nil {
+					log.Printf("Error sending not typing indicator to user %s: %v", toUserID, err)
+				}
+			}
+			continue
+		}
 
 		// Save the message using ChatService
 		if err := chatService.SaveMessage(msg); err != nil {
