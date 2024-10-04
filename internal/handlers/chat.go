@@ -19,7 +19,6 @@ var manager = chat.NewConnectionManager()
 
 // ChatHandler handles WebSocket requests for chat
 func ChatHandler(w http.ResponseWriter, r *http.Request, chatService *services.ChatService) {
-	// Retrieve userID and userName from the context
 	userId := r.Context().Value(middleware.UserIDKey).(string)
 	userName := r.Context().Value(middleware.UserNameKey).(string)
 
@@ -53,10 +52,8 @@ func ChatHandler(w http.ResponseWriter, r *http.Request, chatService *services.C
 
 	// Send "not_typing" indicator to the recipient upon disconnection
 	defer func() {
-		// Remove the user connection from the manager
 		manager.RemoveConnection(userId)
 
-		// Send "not_typing" typing indicator on disconnection
 		typingIndicator := models.TypingIndicator{
 			Type:       "not_typing",
 			FromUserID: userId,
@@ -75,7 +72,6 @@ func ChatHandler(w http.ResponseWriter, r *http.Request, chatService *services.C
 	if err != nil {
 		log.Printf("Error fetching messages: %v", err)
 	} else {
-		// Send chat history to the connected user
 		if err := conn.WriteJSON(messages); err != nil {
 			log.Printf("Error sending chat history: %v", err)
 		}
