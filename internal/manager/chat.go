@@ -1,5 +1,5 @@
 // servit-go/internal/chat/manager.go
-package chat
+package manager
 
 import (
 	"log"

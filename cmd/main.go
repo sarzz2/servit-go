@@ -29,8 +29,11 @@ func main() {
 	// Initialize ChatService
 	chatService := services.NewChatService(db.DB)
 
+	// Initialize OnlineService
+	onlineService := services.NewOnlineService()
+
 	// Set up routes
-	routes.SetupRoutes(router, chatService)
+	routes.SetupRoutes(router, chatService, onlineService)
 
 	fmt.Printf("Starting server on port %s\n", cfg.Port)
 	if err := router.Run(":" + cfg.Port); err != nil {

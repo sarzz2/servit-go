@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"servit-go/internal/chat"
+	"servit-go/internal/manager"
 	"servit-go/internal/middleware"
 	"servit-go/internal/models"
 	"servit-go/internal/services"
@@ -17,10 +17,9 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-var manager = chat.NewConnectionManager()
-
 // ChatHandler handles WebSocket requests for chat
 func ChatHandler(w http.ResponseWriter, r *http.Request, chatService *services.ChatService) {
+	manager := manager.NewConnectionManager()
 	userId := r.Context().Value(middleware.UserIDKey).(string)
 	userName := r.Context().Value(middleware.UserNameKey).(string)
 
