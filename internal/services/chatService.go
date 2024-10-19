@@ -104,3 +104,69 @@ func (s *ChatService) FetchPaginatedMessages(fromUserID, toUserID string, page, 
 
 	return messages, nil
 }
+
+// func (s *ChatService) FetchUnreadMessages(fromUserID, toUserID string) ([]models.Message, error) {
+// 	query := `
+// 		SELECT id, from_user_id, to_user_id, content, is_edited, created_at, updated_at
+// 		FROM direct_messages
+// 		WHERE from_user_id = $1 AND to_user_id = $2 AND is_read = false
+// 		ORDER BY created_at
+// 	`
+
+// 	rows, err := s.DB.Query(query, fromUserID, toUserID)
+// 	if err != nil {
+// 		log.Printf("Failed to fetch unread messages: %v", err)
+// 		return nil, err
+// 	}
+// 	defer rows.Close()
+
+// 	var messages []models.Message
+// 	for rows.Next() {
+// 		var msg models.Message
+// 		if err := rows.Scan(&msg.ID, &msg.FromUserID, &msg.ToUserID, &msg.Content, &msg.IsEdited, &msg.CreatedAt, &msg.UpdatedAt); err != nil {
+// 			log.Printf("Failed to scan message: %v", err)
+// 			return nil, err
+// 		}
+// 		messages = append(messages, msg)
+// 	}
+// 	return messages, nil
+// }
+
+func (s *ChatService) FetchUserChatHistory(userID string) ([]models.ChatHistory, error) {
+	query := `
+		SELECT DISTINCT ON (dm.to_user_id) 
+			u.username, 
+			    u.id,
+				u.profile_picture_url,
+			dm.updated_at
+		FROM direct_messages dm
+		JOIN users u ON u.id = dm.to_user_id
+		WHERE dm.from_user_id = $1
+		ORDER BY dm.to_user_id, dm.updated_at DESC;
+	`
+
+	rows, err := s.DB.Query(query, userID)
+	if err != nil {
+		log.Printf("Failed to fetch chat history: %v", err)
+		return nil, err
+	}
+	defer rows.Close()
+
+	var chatHistory []models.ChatHistory
+	for rows.Next() {
+		var msg models.ChatHistory
+		if err := rows.Scan(&msg.Username, &msg.FriendId, &msg.ProfilePictureURL, &msg.UpdatedAt); err != nil {
+			log.Printf("Failed to scan message: %v", err)
+			return nil, err
+		}
+
+		chatHistory = append(chatHistory, models.ChatHistory{
+			FriendId:          msg.FriendId,
+			ProfilePictureURL: msg.ProfilePictureURL,
+			Username:          msg.Username,
+			UpdatedAt:         msg.UpdatedAt,
+		})
+	}
+	return chatHistory, nil
+
+}

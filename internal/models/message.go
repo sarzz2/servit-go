@@ -18,3 +18,10 @@ type TypingIndicator struct {
 	ToUserID   string `json:"to_user_id"`
 	Typing     bool   `json:"typing"` // if typing, false if not typing
 }
+
+type ChatHistory struct {
+	Username          string `json:"username"`
+	FriendId          string `json:"friend_id"`
+	ProfilePictureURL string `json:"profile_picture_url"`
+	UpdatedAt         string `json:"updated_at"`
+}

@@ -17,9 +17,11 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+// Shared connection manager
+var connManager = manager.NewConnectionManager()
+
 // ChatHandler handles WebSocket requests for chat
 func ChatHandler(w http.ResponseWriter, r *http.Request, chatService *services.ChatService) {
-	manager := manager.NewConnectionManager()
 	userId := r.Context().Value(middleware.UserIDKey).(string)
 	userName := r.Context().Value(middleware.UserNameKey).(string)
 
@@ -32,7 +34,7 @@ func ChatHandler(w http.ResponseWriter, r *http.Request, chatService *services.C
 	defer conn.Close()
 
 	// Add the user connection to the manager using userID
-	manager.AddConnection(userId, conn)
+	connManager.AddConnection(userId, conn)
 
 	// Wait for the initial message from the client that contains the recipient ID
 	var initPayload struct {
@@ -53,7 +55,7 @@ func ChatHandler(w http.ResponseWriter, r *http.Request, chatService *services.C
 
 	// Send "not_typing" indicator to the recipient upon disconnection
 	defer func() {
-		manager.RemoveConnection(userId)
+		connManager.RemoveConnection(userId)
 
 		typingIndicator := models.TypingIndicator{
 			Type:       "not_typing",
@@ -61,7 +63,8 @@ func ChatHandler(w http.ResponseWriter, r *http.Request, chatService *services.C
 			ToUserID:   toUserID,
 			Typing:     false,
 		}
-		if recipientConn, ok := manager.GetConnection(toUserID); ok {
+		log.Printf("Sending not typing indicator to user %s", toUserID)
+		if recipientConn, ok := connManager.GetConnection(toUserID); ok {
 			if err := recipientConn.WriteJSON(typingIndicator); err != nil {
 				log.Printf("Error sending not typing indicator on disconnection to user %s: %v", toUserID, err)
 			}
@@ -98,10 +101,12 @@ func ChatHandler(w http.ResponseWriter, r *http.Request, chatService *services.C
 				Typing:     true,
 			}
 
-			if recipientConn, ok := manager.GetConnection(toUserID); ok {
+			if recipientConn, ok := connManager.GetConnection(toUserID); ok {
 				if err := recipientConn.WriteJSON(typingIndicator); err != nil {
 					log.Printf("Error sending typing indicator to user %s: %v", toUserID, err)
 				}
+			} else {
+				log.Printf("Recipient %s is not connected for typing indicator", toUserID)
 			}
 			continue
 		}
@@ -115,10 +120,12 @@ func ChatHandler(w http.ResponseWriter, r *http.Request, chatService *services.C
 				Typing:     false,
 			}
 
-			if recipientConn, ok := manager.GetConnection(toUserID); ok {
+			if recipientConn, ok := connManager.GetConnection(toUserID); ok {
 				if err := recipientConn.WriteJSON(typingIndicator); err != nil {
 					log.Printf("Error sending not typing indicator to user %s: %v", toUserID, err)
 				}
+			} else {
+				log.Printf("Recipient %s is not connected for not_typing indicator", toUserID)
 			}
 			continue
 		}
@@ -129,7 +136,7 @@ func ChatHandler(w http.ResponseWriter, r *http.Request, chatService *services.C
 		}
 
 		// Send the message to the recipient if connected
-		if recipientConn, ok := manager.GetConnection(msg.ToUserID); ok {
+		if recipientConn, ok := connManager.GetConnection(msg.ToUserID); ok {
 			if err := recipientConn.WriteJSON(msg); err != nil {
 				log.Printf("Error sending message to user %s: %v", msg.ToUserID, err)
 			}
@@ -157,6 +164,26 @@ func FetchPaginatedMessagesHandler(w http.ResponseWriter, r *http.Request, chatS
 
 	// Fetch paginated messages
 	messages, err := chatService.FetchPaginatedMessages(fromUserID, toUserID, page, limit)
+	if err != nil {
+		http.Error(w, "Failed to fetch messages", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(messages); err != nil {
+		http.Error(w, "Failed to encode messages", http.StatusInternalServerError)
+		return
+	}
+}
+
+func FetchUserChatHistory(w http.ResponseWriter, r *http.Request, chatService *services.ChatService) {
+	// Retrieve query params: toUserID
+
+	// Get fromUserID from context (authenticated user)
+	fromUserID := r.Context().Value(middleware.UserIDKey).(string)
+
+	// Fetch chat history between the current user and the recipient
+	messages, err := chatService.FetchUserChatHistory(fromUserID)
 	if err != nil {
 		http.Error(w, "Failed to fetch messages", http.StatusInternalServerError)
 		return
