@@ -16,10 +16,17 @@ jobs:
       with:
         go-version: '^1.23.0'
 
+    # Ensure dependencies are installed for linting to work properly
+    - name: Install dependencies
+      run: |
+        go mod tidy
+        go mod download
+
     - name: Install golangci-lint
       run: |
         curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.42.1
 
+    # Run the linter with the required Go environment
     - name: Run golangci-lint
       run: |
         golangci-lint run
