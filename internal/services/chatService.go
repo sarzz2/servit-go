@@ -7,8 +7,20 @@ import (
 	"time"
 )
 
+// ChatServiceInterface defines the methods to be mocked
+type ChatServiceInterface interface {
+	SaveMessage(msg models.Message) error
+	FetchMessages(fromUserID, toUserID string) ([]models.Message, error)
+	FetchPaginatedMessages(fromUserID, toUserID string, page, limit int) ([]models.Message, error)
+	FetchUserChatHistory(userID string) ([]models.ChatHistory, error)
+}
+
 type ChatService struct {
 	DB *sql.DB
+}
+
+var _ ChatServiceInterface = &ChatService{
+	DB: &sql.DB{},
 }
 
 // NewChatService creates a new instance of ChatService with the given database connection.
@@ -104,33 +116,6 @@ func (s *ChatService) FetchPaginatedMessages(fromUserID, toUserID string, page, 
 
 	return messages, nil
 }
-
-// func (s *ChatService) FetchUnreadMessages(fromUserID, toUserID string) ([]models.Message, error) {
-// 	query := `
-// 		SELECT id, from_user_id, to_user_id, content, is_edited, created_at, updated_at
-// 		FROM direct_messages
-// 		WHERE from_user_id = $1 AND to_user_id = $2 AND is_read = false
-// 		ORDER BY created_at
-// 	`
-
-// 	rows, err := s.DB.Query(query, fromUserID, toUserID)
-// 	if err != nil {
-// 		log.Printf("Failed to fetch unread messages: %v", err)
-// 		return nil, err
-// 	}
-// 	defer rows.Close()
-
-// 	var messages []models.Message
-// 	for rows.Next() {
-// 		var msg models.Message
-// 		if err := rows.Scan(&msg.ID, &msg.FromUserID, &msg.ToUserID, &msg.Content, &msg.IsEdited, &msg.CreatedAt, &msg.UpdatedAt); err != nil {
-// 			log.Printf("Failed to scan message: %v", err)
-// 			return nil, err
-// 		}
-// 		messages = append(messages, msg)
-// 	}
-// 	return messages, nil
-// }
 
 func (s *ChatService) FetchUserChatHistory(userID string) ([]models.ChatHistory, error) {
 	query := `

@@ -147,7 +147,7 @@ func ChatHandler(w http.ResponseWriter, r *http.Request, chatService *services.C
 }
 
 // FetchPaginatedMessagesHandler handles requests for paginated messages based on page number
-func FetchPaginatedMessagesHandler(w http.ResponseWriter, r *http.Request, chatService *services.ChatService) {
+func FetchPaginatedMessagesHandler(w http.ResponseWriter, r *http.Request, chatService services.ChatServiceInterface) {
 	// Retrieve query params: toUserID, page
 	toUserID := r.URL.Query().Get("to_user_id")
 	pageStr := r.URL.Query().Get("page")
@@ -176,7 +176,7 @@ func FetchPaginatedMessagesHandler(w http.ResponseWriter, r *http.Request, chatS
 	}
 }
 
-func FetchUserChatHistory(w http.ResponseWriter, r *http.Request, chatService *services.ChatService) {
+func FetchUserChatHistory(w http.ResponseWriter, r *http.Request, chatService services.ChatServiceInterface) {
 	// Retrieve query params: toUserID
 
 	// Get fromUserID from context (authenticated user)

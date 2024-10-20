@@ -5,7 +5,6 @@ import (
 	"servit-go/internal/config"
 	"servit-go/internal/db"
 	"servit-go/internal/routes"
-	"servit-go/internal/services"
 
 	"github.com/gin-contrib/cors"
 
@@ -21,19 +20,12 @@ func main() {
 	router := gin.Default()
 
 	config := cors.DefaultConfig()
-	config.AllowOrigins = []string{"http://localhost:3000"} // Change to your frontend URL
+	config.AllowOrigins = []string{"http://localhost:3000"}
 	config.AllowMethods = []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"}
 	config.AllowHeaders = []string{"Origin", "Content-Type", "Authorization"}
 	router.Use(cors.New(config))
 
-	// Initialize ChatService
-	chatService := services.NewChatService(db.DB)
-
-	// Initialize OnlineService
-	onlineService := services.NewOnlineService()
-
-	// Set up routes
-	routes.SetupRoutes(router, chatService, onlineService)
+	routes.SetupRoutes(router)
 
 	fmt.Printf("Starting server on port %s\n", cfg.Port)
 	if err := router.Run(":" + cfg.Port); err != nil {

@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"servit-go/internal/db"
 	"servit-go/internal/handlers"
 	"servit-go/internal/middleware"
 	"servit-go/internal/services"
@@ -8,7 +9,11 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func SetupRoutes(router *gin.Engine, chatService *services.ChatService, onlineService *services.OnlineService) {
+func SetupRoutes(router *gin.Engine) {
+	chatService := services.NewChatService(db.DB)
+	onlineService := services.NewOnlineService()
+
+	// Set up routes
 	router.GET("/", middleware.JWTAuthMiddleware(), func(c *gin.Context) {
 		handlers.ChatHandler(c.Writer, c.Request, chatService)
 	})
