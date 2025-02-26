@@ -1,10 +1,11 @@
 package handlers
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
-	"servit-go/internal/manager"
 	"servit-go/internal/middleware"
 	"servit-go/internal/models"
 	"servit-go/internal/services"
@@ -17,180 +18,109 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-// Shared connection manager
-var connManager = manager.NewConnectionManager()
-
-// ChatHandler handles WebSocket requests for chat
-func ChatHandler(w http.ResponseWriter, r *http.Request, chatService *services.ChatService) {
-	userId := r.Context().Value(middleware.UserIDKey).(string)
-	userName := r.Context().Value(middleware.UserNameKey).(string)
-
-	// Upgrade the connection to WebSocket
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Printf("Failed to upgrade WebSocket: %v", err)
-		return
-	}
-	defer conn.Close()
-
-	// Add the user connection to the manager using userID
-	connManager.AddConnection(userId, conn)
-
-	// Wait for the initial message from the client that contains the recipient ID
-	var initPayload struct {
-		ToUserID string `json:"toUserID"`
-		Type     string `json:"type"`
-	}
-
-	if err := conn.ReadJSON(&initPayload); err != nil {
-		log.Printf("Failed to read initial payload: %v", err)
-		return
-	}
-
-	toUserID := initPayload.ToUserID
-	if toUserID == "" {
-		log.Println("No recipient user ID provided")
-		return
-	}
-
-	// Send "not_typing" indicator to the recipient upon disconnection
-	defer func() {
-		connManager.RemoveConnection(userId)
-
-		typingIndicator := models.TypingIndicator{
-			Type:       "not_typing",
-			FromUserID: userId,
-			ToUserID:   toUserID,
-			Typing:     false,
-		}
-		log.Printf("Sending not typing indicator to user %s", toUserID)
-		if recipientConn, ok := connManager.GetConnection(toUserID); ok {
-			if err := recipientConn.WriteJSON(typingIndicator); err != nil {
-				log.Printf("Error sending not typing indicator on disconnection to user %s: %v", toUserID, err)
-			}
-		}
-	}()
-
-	// Fetch chat history between the current user and the recipient
-	messages, err := chatService.FetchMessages(userId, toUserID)
-	if err != nil {
-		log.Printf("Error fetching messages: %v", err)
-	} else {
-		if err := conn.WriteJSON(messages); err != nil {
-			log.Printf("Error sending chat history: %v", err)
-		}
-	}
-
-	// Handle the rest of the WebSocket communication (receiving and sending messages)
-	for {
-		var msg models.Message
-		if err := conn.ReadJSON(&msg); err != nil {
-			log.Printf("Error reading message: %v", err)
-			break
-		}
-
-		msg.FromUserID = userId
-		msg.FromUserName = userName
-
-		// Handle typing indicator
-		if msg.Type == "typing" {
-			typingIndicator := models.TypingIndicator{
-				Type:       "typing",
-				FromUserID: userId,
-				ToUserID:   toUserID,
-				Typing:     true,
-			}
-
-			if recipientConn, ok := connManager.GetConnection(toUserID); ok {
-				if err := recipientConn.WriteJSON(typingIndicator); err != nil {
-					log.Printf("Error sending typing indicator to user %s: %v", toUserID, err)
-				}
-			} else {
-				log.Printf("Recipient %s is not connected for typing indicator", toUserID)
-			}
-			continue
-		}
-
-		// Handle "not_typing" indicator
-		if msg.Type == "not_typing" {
-			typingIndicator := models.TypingIndicator{
-				Type:       "not_typing",
-				FromUserID: userId,
-				ToUserID:   toUserID,
-				Typing:     false,
-			}
-
-			if recipientConn, ok := connManager.GetConnection(toUserID); ok {
-				if err := recipientConn.WriteJSON(typingIndicator); err != nil {
-					log.Printf("Error sending not typing indicator to user %s: %v", toUserID, err)
-				}
-			} else {
-				log.Printf("Recipient %s is not connected for not_typing indicator", toUserID)
-			}
-			continue
-		}
-
-		// Save the message using ChatService
-		if err := chatService.SaveMessage(msg); err != nil {
-			log.Printf("Error saving message: %v", err)
-		}
-
-		// Send the message to the recipient if connected
-		if recipientConn, ok := connManager.GetConnection(msg.ToUserID); ok {
-			if err := recipientConn.WriteJSON(msg); err != nil {
-				log.Printf("Error sending message to user %s: %v", msg.ToUserID, err)
-			}
-		} else {
-			log.Printf("User %s not connected", msg.ToUserID)
-		}
-	}
-}
-
-// FetchPaginatedMessagesHandler handles requests for paginated messages based on page number
+// FetchPaginatedMessagesHandler retrieves messages between two users using paging state.
 func FetchPaginatedMessagesHandler(w http.ResponseWriter, r *http.Request, chatService services.ChatServiceInterface) {
-	// Retrieve query params: toUserID, page
 	toUserID := r.URL.Query().Get("to_user_id")
-	pageStr := r.URL.Query().Get("page")
-
-	page, err := strconv.Atoi(pageStr)
-	if err != nil || page <= 0 {
-		page = 2
+	pagingStateStr := r.URL.Query().Get("paging_state")
+	var pagingState []byte
+	if pagingStateStr != "" {
+		// Decode the paging state from its base64 string representation.
+		var err error
+		pagingState, err = base64.StdEncoding.DecodeString(pagingStateStr)
+		if err != nil {
+			log.Print(err)
+			http.Error(w, "Invalid paging_state", http.StatusBadRequest)
+			return
+		}
 	}
 
-	const limit = 25
+	// Optionally, allow the frontend to specify a page size; default to 50.
+	pageSize := 10
+	if psStr := r.URL.Query().Get("page_size"); psStr != "" {
+		if ps, err := strconv.Atoi(psStr); err == nil {
+			pageSize = ps
+		}
+	}
 
 	// Get fromUserID from context (authenticated user)
-	fromUserID := r.Context().Value(middleware.UserIDKey).(string)
+	fromUserID, ok := r.Context().Value(middleware.UserIDKey).(string)
+	if !ok || fromUserID == "" {
+		http.Error(w, "User not authenticated", http.StatusUnauthorized)
+		return
+	}
 
-	// Fetch paginated messages
-	messages, err := chatService.FetchPaginatedMessages(fromUserID, toUserID, page, limit)
+	// Fetch paginated messages using conversation-based query.
+	messages, newPagingState, err := chatService.QueryMessages(fromUserID, toUserID, pageSize, pagingState)
 	if err != nil {
+		log.Print(err)
 		http.Error(w, "Failed to fetch messages", http.StatusInternalServerError)
 		return
 	}
 
+	// Build response struct containing messages and the new paging state.
+	response := struct {
+		Messages    []models.DMMessage `json:"messages"`
+		PagingState []byte             `json:"paging_state"`
+	}{
+		Messages:    messages,
+		PagingState: newPagingState, // Will be encoded as base64 in JSON
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(messages); err != nil {
+	if err := json.NewEncoder(w).Encode(response); err != nil {
 		http.Error(w, "Failed to encode messages", http.StatusInternalServerError)
 		return
 	}
 }
 
-func FetchUserChatHistory(w http.ResponseWriter, r *http.Request, chatService services.ChatServiceInterface) {
-	// Retrieve query params: toUserID
-
-	// Get fromUserID from context (authenticated user)
-	fromUserID := r.Context().Value(middleware.UserIDKey).(string)
-
-	// Fetch chat history between the current user and the recipient
-	messages, err := chatService.FetchUserChatHistory(fromUserID)
-	if err != nil {
-		http.Error(w, "Failed to fetch messages", http.StatusInternalServerError)
+func FetchPaginatedChannelMessagesHandler(w http.ResponseWriter, r *http.Request, chatService services.ChatServiceInterface) {
+	// Retrieve required query parameter: channel_id.
+	channelID := r.URL.Query().Get("channel_id")
+	if channelID == "" {
+		http.Error(w, "Missing channel_id", http.StatusBadRequest)
 		return
 	}
 
+	// Retrieve optional paging_state parameter and decode it from base64.
+	pagingStateStr := r.URL.Query().Get("paging_state")
+	var pagingState []byte
+	if pagingStateStr != "" {
+		var err error
+		pagingState, err = base64.StdEncoding.DecodeString(pagingStateStr)
+		if err != nil {
+			log.Print(err)
+			http.Error(w, "Invalid paging_state", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Optionally allow the frontend to specify a page size; default to 10.
+	pageSize := 10
+	if psStr := r.URL.Query().Get("page_size"); psStr != "" {
+		if ps, err := strconv.Atoi(psStr); err == nil {
+			pageSize = ps
+		}
+	}
+
+	// Fetch paginated channel messages.
+	messages, newPagingState, err := chatService.QueryChannelMessages(channelID, pageSize, pagingState)
+	if err != nil {
+		log.Print(err)
+		http.Error(w, fmt.Sprintf("Failed to fetch channel messages: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Build response struct containing messages and the new paging state.
+	response := struct {
+		Messages    []models.ChannelMessage `json:"messages"`
+		PagingState []byte                  `json:"paging_state"`
+	}{
+		Messages:    messages,
+		PagingState: newPagingState,
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(messages); err != nil {
+	if err := json.NewEncoder(w).Encode(response); err != nil {
 		http.Error(w, "Failed to encode messages", http.StatusInternalServerError)
 		return
 	}

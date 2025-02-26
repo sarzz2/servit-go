@@ -2,25 +2,22 @@ package services
 
 import (
 	"database/sql"
-	"log"
+	"fmt"
+	"servit-go/internal/db"
 	"servit-go/internal/models"
 	"time"
+
+	"github.com/gocql/gocql"
 )
 
 // ChatServiceInterface defines the methods to be mocked
 type ChatServiceInterface interface {
-	SaveMessage(msg models.Message) error
-	FetchMessages(fromUserID, toUserID string) ([]models.Message, error)
-	FetchPaginatedMessages(fromUserID, toUserID string, page, limit int) ([]models.Message, error)
-	FetchUserChatHistory(userID string) ([]models.ChatHistory, error)
+	QueryMessages(fromUserID, toUserID string, pageSize int, pagingState []byte) ([]models.DMMessage, []byte, error)
+	QueryChannelMessages(channelID string, pageSize int, pagingState []byte) ([]models.ChannelMessage, []byte, error)
 }
 
 type ChatService struct {
 	DB *sql.DB
-}
-
-var _ ChatServiceInterface = &ChatService{
-	DB: &sql.DB{},
 }
 
 // NewChatService creates a new instance of ChatService with the given database connection.
@@ -30,128 +27,170 @@ func NewChatService(db *sql.DB) *ChatService {
 	}
 }
 
-// SaveMessage saves a chat message to the database.
-func (s *ChatService) SaveMessage(msg models.Message) error {
-	query := `
-		INSERT INTO direct_messages (from_user_id, to_user_id, content, is_edited, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
-	`
-	now := time.Now()
-	msg.CreatedAt = now.Format(time.RFC3339)
-	msg.UpdatedAt = now.Format(time.RFC3339)
-
-	// Execute the query to save the message
-	_, err := s.DB.Exec(query, msg.FromUserID, msg.ToUserID, msg.Content, msg.IsEdited, msg.CreatedAt, msg.UpdatedAt)
-	if err != nil {
-		log.Printf("Failed to save message: %v", err)
-		return err
+// createConversationID creates a canonical conversation ID using the two user IDs.
+func createConversationID(userA, userB string) string {
+	if userA < userB {
+		return fmt.Sprintf("%s#%s", userA, userB)
 	}
-	return nil
+	return fmt.Sprintf("%s#%s", userB, userA)
 }
 
-// FetchMessages retrieves all messages between two users, ordered by the time of creation.
-func (s *ChatService) FetchMessages(fromUserID, toUserID string) ([]models.Message, error) {
-	query := `
-		SELECT id, from_user_id, to_user_id, content, is_edited, created_at, updated_at
-		FROM direct_messages
-		WHERE (from_user_id = $1 AND to_user_id = $2)
-		OR (from_user_id = $2 AND to_user_id = $1)
-		ORDER BY created_at DESC LIMIT 25
-	`
+// SaveDMMessage saves a direct message to ScyllaDB using conversation_id.
+func SaveDMMessage(msg models.DMMessage) error {
+	query := `INSERT INTO direct_messages 
+		(conversation_id, timestamp, message_id, sender_id, receiver_id, content) 
+		VALUES (?, ?, ?, ?, ?, ?)`
 
-	rows, err := s.DB.Query(query, fromUserID, toUserID)
+	senderUUID, err := gocql.ParseUUID(msg.SenderID)
 	if err != nil {
-		log.Printf("Failed to fetch messages: %v", err)
-		return nil, err
+		return fmt.Errorf("invalid sender UUID: %w", err)
 	}
-	defer rows.Close()
 
-	var messages []models.Message
-	for rows.Next() {
-		var msg models.Message
-		if err := rows.Scan(&msg.ID, &msg.FromUserID, &msg.ToUserID, &msg.Content, &msg.IsEdited, &msg.CreatedAt, &msg.UpdatedAt); err != nil {
-			log.Printf("Failed to scan message: %v", err)
-			return nil, err
-		}
-		messages = append(messages, msg)
+	receiverUUID, err := gocql.ParseUUID(msg.ReceiverID)
+	if err != nil {
+		return fmt.Errorf("invalid receiver UUID: %w", err)
 	}
-	return messages, nil
+
+	messageUUID := gocql.TimeUUID()
+	conversationID := createConversationID(msg.SenderID, msg.ReceiverID)
+
+	return db.ScyllaSession.Query(query,
+		conversationID,
+		msg.Timestamp,
+		messageUUID,
+		senderUUID,
+		receiverUUID,
+		msg.Content,
+	).Exec()
 }
 
-// FetchPaginatedMessages retrieves a paginated set of messages based on the page number.
-func (s *ChatService) FetchPaginatedMessages(fromUserID, toUserID string, page, limit int) ([]models.Message, error) {
-	// Calculate the offset based on the page number
-	offset := (page - 1) * limit
+// QueryMessages retrieves messages between two users by using conversation_id.
+func (c *ChatService) QueryMessages(userA, userB string, pageSize int, pagingState []byte) ([]models.DMMessage, []byte, error) {
+	conversationID := createConversationID(userA, userB)
 
-	query := `
-		SELECT id, from_user_id, to_user_id, content, is_edited, created_at, updated_at
-		FROM direct_messages
-		WHERE (from_user_id = $1 AND to_user_id = $2)
-		OR (from_user_id = $2 AND to_user_id = $1)
-		ORDER BY created_at DESC
-		LIMIT $3 OFFSET $4
-	`
+	query := `SELECT sender_id, receiver_id, timestamp, message_id, content 
+		FROM direct_messages 
+		WHERE conversation_id = ?
+		ORDER BY timestamp DESC`
 
-	rows, err := s.DB.Query(query, fromUserID, toUserID, limit, offset)
-	if err != nil {
-		log.Printf("Failed to fetch paginated messages: %v", err)
-		return nil, err
+	// Use PageSize to set the maximum number of rows per page.
+	q := db.ScyllaSession.Query(query, conversationID).PageSize(pageSize)
+	if pagingState != nil {
+		q = q.PageState(pagingState)
 	}
-	defer rows.Close()
 
-	var messages []models.Message
-	for rows.Next() {
-		var msg models.Message
-		if err := rows.Scan(&msg.ID, &msg.FromUserID, &msg.ToUserID, &msg.Content, &msg.IsEdited, &msg.CreatedAt, &msg.UpdatedAt); err != nil {
-			log.Printf("Failed to scan message: %v", err)
-			return nil, err
+	iter := q.Iter()
+
+	var messages []models.DMMessage
+	var (
+		senderUUID   gocql.UUID
+		receiverUUID gocql.UUID
+		timestamp    time.Time
+		messageID    gocql.UUID
+		content      string
+	)
+
+	for i := 0; i < pageSize; i++ {
+		if !iter.Scan(&senderUUID, &receiverUUID, &timestamp, &messageID, &content) {
+			break
 		}
-		messages = append(messages, msg)
-	}
-
-	// Reverse the order to maintain chronological order (since we ordered by DESC)
-	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
-		messages[i], messages[j] = messages[j], messages[i]
-	}
-
-	return messages, nil
-}
-
-func (s *ChatService) FetchUserChatHistory(userID string) ([]models.ChatHistory, error) {
-	query := `
-		SELECT DISTINCT ON (dm.to_user_id) 
-			u.username, 
-			    u.id,
-				u.profile_picture_url,
-			dm.updated_at
-		FROM direct_messages dm
-		JOIN users u ON u.id = dm.to_user_id
-		WHERE dm.from_user_id = $1
-		ORDER BY dm.to_user_id, dm.updated_at DESC;
-	`
-
-	rows, err := s.DB.Query(query, userID)
-	if err != nil {
-		log.Printf("Failed to fetch chat history: %v", err)
-		return nil, err
-	}
-	defer rows.Close()
-
-	var chatHistory []models.ChatHistory
-	for rows.Next() {
-		var msg models.ChatHistory
-		if err := rows.Scan(&msg.Username, &msg.FriendId, &msg.ProfilePictureURL, &msg.UpdatedAt); err != nil {
-			log.Printf("Failed to scan message: %v", err)
-			return nil, err
-		}
-
-		chatHistory = append(chatHistory, models.ChatHistory{
-			FriendId:          msg.FriendId,
-			ProfilePictureURL: msg.ProfilePictureURL,
-			Username:          msg.Username,
-			UpdatedAt:         msg.UpdatedAt,
+		messages = append(messages, models.DMMessage{
+			SenderID:   senderUUID.String(),
+			ReceiverID: receiverUUID.String(),
+			Content:    content,
+			Timestamp:  timestamp,
 		})
 	}
-	return chatHistory, nil
 
+	// Capture the paging state for subsequent queries.
+	newPagingState := iter.PageState()
+	if err := iter.Close(); err != nil {
+		return nil, nil, fmt.Errorf("query failed: %w", err)
+	}
+
+	return messages, newPagingState, nil
+}
+
+func SaveChannelMessage(msg models.ChannelMessage) error {
+	// Parse channel and sender IDs as UUIDs.
+	channelUUID, err := gocql.ParseUUID(msg.ChannelID)
+	if err != nil {
+		return fmt.Errorf("invalid channel UUID: %w", err)
+	}
+	senderUUID, err := gocql.ParseUUID(msg.SenderID)
+	if err != nil {
+		return fmt.Errorf("invalid sender UUID: %w", err)
+	}
+
+	// Use the message timestamp to determine the date bucket.
+	// You can change the bucket granularity as needed (day, week, month, etc.).
+	dateBucket := msg.Timestamp.Format("2006-01-02")
+
+	// Generate a unique message ID based on time.
+	messageUUID := gocql.TimeUUID()
+
+	query := `INSERT INTO channel_messages 
+		(channel_id, message_date, timestamp, message_id, sender_id, sender_username, content) 
+		VALUES (?, ?, ?, ?, ?, ?, ?)`
+	return db.ScyllaSession.Query(query,
+		channelUUID,
+		dateBucket,
+		msg.Timestamp,
+		messageUUID,
+		senderUUID,
+		msg.SenderUsername,
+		msg.Content,
+	).Exec()
+}
+
+// QueryChannelMessages retrieves paginated messages for a given channel and date bucket.
+func (c *ChatService) QueryChannelMessages(channelID string, pageSize int, pagingState []byte) ([]models.ChannelMessage, []byte, error) {
+	// Parse channel ID to UUID.
+	channelUUID, err := gocql.ParseUUID(channelID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid channel UUID: %w", err)
+	}
+
+	query := `SELECT sender_id, sender_username, timestamp, message_id, content 
+		FROM channel_messages 
+		WHERE channel_id = ? AND message_date = ?
+		ORDER BY timestamp DESC`
+
+	// Use PageSize to limit the number of rows per page.
+	q := db.ScyllaSession.Query(query, channelUUID, time.Now().Format("2006-01-02")).PageSize(pageSize)
+	if pagingState != nil {
+		q = q.PageState(pagingState)
+	}
+
+	iter := q.Iter()
+
+	var messages []models.ChannelMessage
+	var (
+		senderUUID     gocql.UUID
+		senderUsername string
+		timestamp      time.Time
+		messageID      gocql.UUID
+		content        string
+	)
+
+	// Loop up to pageSize times; break if no more rows.
+	for i := 0; i < pageSize; i++ {
+		if !iter.Scan(&senderUUID, &senderUsername, &timestamp, &messageID, &content) {
+			break
+		}
+		messages = append(messages, models.ChannelMessage{
+			SenderID:       senderUUID.String(),
+			SenderUsername: senderUsername,
+			ChannelID:      channelID,
+			Content:        content,
+			Timestamp:      timestamp,
+		})
+	}
+
+	newPagingState := iter.PageState()
+	if err := iter.Close(); err != nil {
+		return nil, nil, fmt.Errorf("query failed: %w", err)
+	}
+
+	return messages, newPagingState, nil
 }
